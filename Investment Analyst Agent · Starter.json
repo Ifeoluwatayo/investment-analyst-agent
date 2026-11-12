@@ -1,0 +1,1269 @@
+{
+  "name": "Investment Analyst Agent · Starter",
+  "nodes": [
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "watchlist",
+              "name": "watchlist",
+              "value": "={{ $json.Watchlist || 'NVDA, AVGO, AMAT, SNPS, MU, TXN' }}",
+              "type": "string"
+            },
+            {
+              "id": "thesis",
+              "name": "thesis",
+              "value": "Semiconductor companies benefiting from long-term demand for computing and AI, with differentiated technology, durable customer demand and strong cash flow, at a price that leaves room for a 12% annual return. Wary of high debt, dependence on a few customers, and growth that relies on a short-lived boom.",
+              "type": "string"
+            },
+            {
+              "id": "hurdleRate",
+              "name": "hurdleRate",
+              "value": 0.12,
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c16bc76d-675b-4a7f-b911-0ca5239ac267",
+      "name": "Your Settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        224,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=My watchlist: {{ $json.watchlist }}\nMy thesis: {{ $json.thesis }}\nHurdle: {{ $json.hurdleRate }} annual return over 5 years.\nToday is {{ $now.toFormat(\"MMMM d, yyyy\") }}.",
+        "options": {
+          "systemMessage": "You are an investment analyst. For every company on the watchlist, choose growth and an exit multiple, run Return Model, and make the call.\n\nYour tools:\n- News Search (Google News, last 7 days): call it with the company name and ticker, e.g. \"Eli Lilly LLY\".\n- Return Model: runs the 5-year return model for one company. Give it the ticker, growth, exitMultiple and the hurdle. It pulls the latest 10-K and today's price and returns the price, annual return, call, growth needed to clear the hurdle, current operating margin, debt / operating income, a 3x3 grid of returns and any data notes.\n\nYour assumptions:\n- growth: average annual revenue growth for the next 5 years, as a decimal (0.12 = 12%).\n- exitMultiple: the enterprise value / operating income the market will pay in year 5.\nBe realistic: keep growth between -10% and 30% and the multiple between 5x and 40x.\n\nFor each company: search the news, choose growth and the exit multiple, then run Return Model.\n\nRules:\n- Run Return Model once for every company on the watchlist. Never calculate anything yourself, not even a ratio. Every number comes from Return Model.\n- Choose growth and the exit multiple yourself from the news and the company's numbers, and give a one-sentence reason for both.\n- Copy price, growth, exit multiple, annual return and call exactly as Return Model returned them.\n- Copy each ticker exactly as it appears on the watchlist (for example \"TXN\", never \"TEXAS INSTRUMENTS INC\"). Put the company name only in the company field.\n- If Return Model returns \"No call\", keep it and use its notes to say why in the reason.\n\n## Memory\n- Before you make a call, check Past Calls for that ticker and say in the reason what changed since the last call.\n\n## Our handbook\n- Before you set assumptions or make a call on a company, search Handbook for that company and for the rules that apply. Follow the house guidance and cite the section numbers in the reason.\n\nReturn ONLY this JSON, with no other text, one entry per company:\n{\"calls\":[{\"ticker\":\"LLY\",\"company\":\"Eli Lilly and Company\",\"price\":1273.46,\"growth\":0.15,\"exitMultiple\":20,\"annualReturn\":0.0163,\"call\":\"Pass\",\"reason\":\"One sentence explaining both numbers.\"}]}",
+          "maxIterations": 20
+        }
+      },
+      "id": "7d784a34-40f9-4c10-a309-8d2e369c3e6e",
+      "name": "Investment Analyst",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        448,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "claude-sonnet-5",
+          "cachedResultName": "Claude Sonnet 5"
+        },
+        "options": {
+          "maxTokensToSample": 20000
+        }
+      },
+      "id": "7b6d3876-dd4b-4df9-b9a6-82ffec1b0114",
+      "name": "Claude",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.6,
+      "position": [
+        464,
+        240
+      ],
+      "credentials": {
+        "anthropicApi": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Anthropic account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "toolDescription": "Searches Google News for articles from the last 7 days. Input a company name plus its ticker, e.g. \"Eli Lilly LLY\". Returns headlines with links and dates.",
+        "url": "https://news.google.com/rss/search",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "q",
+              "value": "={{ $fromAI(\"query\", \"Company name plus ticker, e.g. Eli Lilly LLY\", \"string\") }} when:7d"
+            },
+            {
+              "name": "hl",
+              "value": "en-US"
+            },
+            {
+              "name": "gl",
+              "value": "US"
+            },
+            {
+              "name": "ceid",
+              "value": "US:en"
+            }
+          ]
+        },
+        "options": {},
+        "optimizeResponse": true,
+        "responseType": "text",
+        "truncateResponse": true,
+        "maxLength": 8000
+      },
+      "id": "091a8816-8ee8-4f46-bff5-20883906563b",
+      "name": "News Search",
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.5,
+      "position": [
+        592,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Turn the analyst's JSON answer into one Analyst Calls row per company on the watchlist\nconst { watchlist } = $('Your Settings').first().json;\nconst tickers = watchlist.split(',').map(t => t.trim().toUpperCase()).filter(Boolean);\nconst out = String($json.output ?? '');\nlet calls = [];\ntry { calls = JSON.parse(out.slice(out.indexOf('{'), out.lastIndexOf('}') + 1)).calls || []; } catch (e) {}\nconst num = x => (x === null || x === undefined || x === '' || !Number.isFinite(Number(x)) ? null : Number(x));\nconst CALLS = ['Research', 'Watch', 'Pass', 'No call'];\n\n// Company names for the watchlist tickers, used when a call's ticker doesn't match.\n// Add a name here when you add a ticker to the watchlist.\nconst NAMES = { NVDA: 'nvidia', AVGO: 'broadcom', AMAT: 'applied materials', SNPS: 'synopsys',\n  MU: 'micron', TXN: 'texas instruments' };\nconst norm = s => String(s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');\nconst byTicker = ticker => calls.find(x => String(x.ticker ?? '').trim().toUpperCase() === ticker);\nconst byName = ticker => {\n  const name = norm(NAMES[ticker]);\n  if (!name) return undefined;\n  return calls.find(x => !tickers.includes(String(x.ticker ?? '').trim().toUpperCase())\n    && (norm(x.ticker).includes(name) || norm(x.company).includes(name)));\n};\n\nreturn tickers.map(ticker => {\n  const c = byTicker(ticker) || byName(ticker) || {};\n  return { json: { runDate: $now.toISODate(), ticker, company: c.company || ticker,\n    price: num(c.price), growth: num(c.growth), exitMultiple: num(c.exitMultiple),\n    annualReturn: num(c.annualReturn), call: CALLS.includes(c.call) ? c.call : 'No call',\n    reason: c.reason || 'The analyst returned no call for this company.', savedBy: 'agent' } };\n});\n"
+      },
+      "id": "7592fb9e-2466-4036-b14d-244b08be313b",
+      "name": "Read the Calls",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Analyst Calls"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "runDate",
+              "displayName": "runDate",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "ticker",
+              "displayName": "ticker",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "company",
+              "displayName": "company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "price",
+              "displayName": "price",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "growth",
+              "displayName": "growth",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "exitMultiple",
+              "displayName": "exitMultiple",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "annualReturn",
+              "displayName": "annualReturn",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "call",
+              "displayName": "call",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "reason",
+              "displayName": "reason",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "savedBy",
+              "displayName": "savedBy",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "growthNeeded",
+              "displayName": "growthNeeded",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "debtToOpIncome",
+              "displayName": "debtToOpIncome",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "grid",
+              "displayName": "grid",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "73833db0-580a-46cb-9caa-05a82885db29",
+      "name": "Save Calls",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        2320,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Turn every proposed call into one brief, with a Saved column for the calls you approved\n// Runs after the Save Calls branch; if nothing was ticked, Save Calls doesn't run and nothing is saved\nconst saved = new Set($('Save Calls').isExecuted ? $('Approved Calls').all().map(i => i.json.ticker) : []);\nconst rows = $('Read the Calls').all().map(i => ({ ...i.json, saved: saved.has(i.json.ticker) }))\n  .sort((a, b) => (b.annualReturn ?? -9) - (a.annualReturn ?? -9));\nconst { hurdleRate, thesis } = $('Your Settings').first().json;\n\nconst pct = x => (x === null || x === undefined ? '—' : (x * 100).toFixed(1) + '%');\nconst esc = s => String(s ?? '').replace(/[&<>\"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;' }[ch]));\nconst color = { Research: '#1a7f37', Watch: '#9a6700', Pass: '#cf222e' };\nconst count = c => rows.filter(r => r.call === c).length;\n\nconst td = 'style=\"padding:8px;border-bottom:1px solid #e5e5e5;vertical-align:top\"';\nconst th = h => `<th style=\"text-align:left;padding:8px;border-bottom:2px solid #222\">${h}</th>`;\nconst html = `<div style=\"font-family:Helvetica,Arial,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px\">\n<h2 style=\"margin-bottom:4px\">Investment Analyst Brief · ${$now.toFormat('MMMM d, yyyy')}</h2>\n<p style=\"color:#555;margin-top:0\">Thesis: ${esc(thesis)}<br>Hurdle ${pct(hurdleRate)} a year over 5 years · ${count('Research')} Research · ${count('Watch')} Watch · ${count('Pass')} Pass</p>\n<table style=\"border-collapse:collapse;font-size:13px;width:100%\"><tr>\n${['Company', 'Price', 'Growth / yr', 'Exit multiple', 'Annual return', 'Call', 'Saved', 'Why'].map(th).join('')}</tr>\n${rows.map(r => `<tr><td ${td}><b>${esc(r.ticker)}</b><br><small>${esc(r.company)}</small></td>\n<td ${td}>${r.price ? '$' + Number(r.price).toFixed(2) : '—'}</td><td ${td}>${pct(r.growth)}</td>\n<td ${td}>${r.exitMultiple ? r.exitMultiple + 'x' : '—'}</td><td ${td}><b>${pct(r.annualReturn)}</b></td>\n<td ${td}><b style=\"color:${color[r.call] || '#555'}\">${esc(r.call)}</b></td>\n<td ${td}>${r.saved ? '<b style=\"color:#1a7f37\">Yes</b>' : '<span style=\"color:#888\">No</span>'}</td><td ${td}>${esc(r.reason)}</td></tr>`).join('')}\n</table><p style=\"color:#888;font-size:12px\">${saved.size} of ${rows.length} calls saved to the Analyst Calls table. Numbers from the latest 10-K (SEC) and today's price.</p></div>`;\n\nreturn [{ json: { html } }];\n"
+      },
+      "id": "922ea047-c1f2-4aca-abee-1414637dd66c",
+      "name": "Write the Brief",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2096,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "description": "Runs the 5-year return model for ONE company. Give it the ticker, growth (decimal, 0.12 = 12%), exitMultiple (EV / operating income in year 5) and hurdle (decimal). It pulls the latest 10-K and today's price and returns price, growth, exitMultiple, annualReturn, call, growthNeeded, currentMargin, debtToOpIncome, sharePriceYear5, a 3x3 grid of returns and any data notes.",
+        "workflowId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "dU8QKU0EAHDv32Sl",
+          "cachedResultName": "Tool · Return Model",
+          "cachedResultUrl": "/workflow/dU8QKU0EAHDv32Sl"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ticker": "={{ $fromAI('ticker', 'Stock ticker, e.g. NVDA', 'string') }}",
+            "growth": "={{ $fromAI('growth', 'Average annual revenue growth for the next 5 years, as a decimal (0.12 = 12%)', 'number') }}",
+            "exitMultiple": "={{ $fromAI('exitMultiple', 'Enterprise value / operating income the market will pay in year 5, e.g. 20', 'number') }}",
+            "hurdle": "={{ $fromAI('hurdle', 'Hurdle rate as a decimal, e.g. 0.12', 'number') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "ticker",
+              "displayName": "ticker",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "growth",
+              "displayName": "growth",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "number"
+            },
+            {
+              "id": "exitMultiple",
+              "displayName": "exitMultiple",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "number"
+            },
+            {
+              "id": "hurdle",
+              "displayName": "hurdle",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "number"
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "id": "81e190fa-5666-4bc3-bd5c-526874d4f201",
+      "name": "Return Model",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        720,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Gets this analyst's past calls for ONE ticker from the Analyst Calls table, newest first, up to 10. Input the ticker in capitals, e.g. NVDA. Each row has runDate, price, growth, exitMultiple, annualReturn, call and reason.",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "rGMOpeJScjR8lobf",
+          "cachedResultName": "Analyst Calls"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "ticker",
+              "keyValue": "={{ $fromAI('ticker', 'Stock ticker in capitals, e.g. NVDA', 'string') }}"
+            }
+          ]
+        },
+        "limit": 10,
+        "orderBy": true
+      },
+      "id": "142f9902-c092-42c0-af83-947bc13206f5",
+      "name": "Past Calls",
+      "type": "n8n-nodes-base.dataTableTool",
+      "typeVersion": 1.1,
+      "position": [
+        848,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://raw.githubusercontent.com/Ifeoluwatayo/investment-analyst-agent/main/semiconductor-coverage-handbook.pdf",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "64925f41-b2b2-4b8d-9d84-5df0eda1be84",
+      "name": "Download Handbook",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        224,
+        -480
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "insert",
+        "memoryKey": {
+          "__rl": true,
+          "mode": "list",
+          "value": "investment_handbook",
+          "cachedResultName": "investment_handbook"
+        },
+        "clearStore": true
+      },
+      "id": "9ab56098-8967-4cb0-8130-fe46e7f08783",
+      "name": "Store Handbook",
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreInMemory",
+      "typeVersion": 1.3,
+      "position": [
+        672,
+        -480
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "c56b0d3c-c1eb-4b72-a5c8-8789993dbcec",
+      "name": "Handbook Embeddings",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        624,
+        -272
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": null,
+          "name": "Gateway credits",
+          "__aiGatewayManaged": true
+        }
+      }
+    },
+    {
+      "parameters": {
+        "dataType": "binary",
+        "loader": "pdfLoader",
+        "textSplittingMode": "custom",
+        "options": {}
+      },
+      "id": "b7775951-a36b-4b62-85f8-bd0e02790935",
+      "name": "Handbook Loader",
+      "type": "@n8n/n8n-nodes-langchain.documentDefaultDataLoader",
+      "typeVersion": 1.1,
+      "position": [
+        800,
+        -272
+      ]
+    },
+    {
+      "parameters": {
+        "chunkSize": 1200,
+        "chunkOverlap": 150,
+        "options": {}
+      },
+      "id": "5a09b7b6-25f4-4bf8-9116-ab03d60d1509",
+      "name": "Handbook Splitter",
+      "type": "@n8n/n8n-nodes-langchain.textSplitterRecursiveCharacterTextSplitter",
+      "typeVersion": 1,
+      "position": [
+        880,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "retrieve-as-tool",
+        "toolDescription": "Searches our house handbook, the Semiconductor Coverage Handbook: investment rules, how we model, an industry primer, company types, and a note on each watchlist company. Search for the company and the rule you need, for example ‘Micron peak margin’ or ‘debt rule’.",
+        "memoryKey": {
+          "__rl": true,
+          "mode": "list",
+          "value": "investment_handbook",
+          "cachedResultName": "investment_handbook"
+        },
+        "topK": 5
+      },
+      "id": "069690ef-40e4-42da-841b-27dbc4e402c4",
+      "name": "Handbook",
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreInMemory",
+      "typeVersion": 1.3,
+      "position": [
+        976,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "d0280bbd-27f3-484a-8072-23f41eada351",
+      "name": "Handbook Search Embeddings",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        976,
+        448
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": null,
+          "name": "Gateway credits",
+          "__aiGatewayManaged": true
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// GitHub raw links label files as generic data; the PDF loader needs them labelled as PDFs\nfor (const item of $input.all()) {\n  for (const file of Object.values(item.binary ?? {})) file.mimeType = 'application/pdf';\n}\nreturn $input.all();\n"
+      },
+      "id": "e9f81d44-2c9a-4208-ac44-4dfe4218a207",
+      "name": "Tag as PDF",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        -480
+      ]
+    },
+    {
+      "parameters": {
+        "formTitle": "Run Analysis",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Watchlist",
+              "fieldName": "Watchlist",
+              "defaultValue": "NVDA, AVGO, AMAT, SNPS, MU, TXN",
+              "requiredField": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b34d96ea-5e3c-47f1-a5a6-2d704ba7494c",
+      "name": "Run Analysis",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.6,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "438e549f-9aa1-4a66-b94a-a92b8e57d791"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Lay out the proposed calls for review, with one 'Save these calls' checkbox per ticker\nconst rows = $input.all().map(i => i.json);\nconst pct = x => (x === null || x === undefined ? '—' : (x * 100).toFixed(1) + '%');\nconst esc = s => String(s ?? '').replace(/[&<>\"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;' }[ch]));\nconst td = 'style=\"padding:6px;border-bottom:1px solid #e5e5e5;vertical-align:top;text-align:left\"';\nconst th = h => `<th style=\"text-align:left;padding:6px;border-bottom:2px solid #222\">${h}</th>`;\nconst html = `<table style=\"border-collapse:collapse;font-size:13px;width:100%\"><tr>${['Ticker', 'Call', 'Annual return', 'Reason'].map(th).join('')}</tr>\n${rows.map(r => `<tr><td ${td}><b>${esc(r.ticker)}</b></td><td ${td}>${esc(r.call)}</td><td ${td}>${pct(r.annualReturn)}</td><td ${td}>${esc(r.reason)}</td></tr>`).join('')}</table>`;\n\nreturn [{ json: { fields: [\n  { fieldType: 'html', elementName: 'proposedCalls', html },\n  { fieldLabel: 'Save these calls', fieldName: 'Save these calls', fieldType: 'checkbox',\n    fieldOptions: { values: rows.map(r => ({ option: r.ticker })) } },\n] } }];\n"
+      },
+      "id": "030325f9-549a-43ed-a6d2-5016bf1bc43f",
+      "name": "Build Review Page",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1648,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "defineForm": "json",
+        "jsonOutput": "={{ JSON.stringify($json.fields) }}",
+        "options": {
+          "formTitle": "Review the Calls",
+          "formDescription": "Tick the calls to save to the Analyst Calls table. Unticked calls are not saved.",
+          "buttonLabel": "Save ticked calls"
+        }
+      },
+      "id": "d976f303-c25a-46d9-b9d2-c4c0a11a6016",
+      "name": "Review the Calls",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.5,
+      "position": [
+        1872,
+        0
+      ],
+      "webhookId": "8d976fbb-55d6-4ab7-bc07-6ebf113d6c22"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Keep only the calls ticked on Review the Calls\nlet picked = $('Review the Calls').first().json['Save these calls'] ?? [];\nif (typeof picked === 'string') { try { picked = JSON.parse(picked); } catch (e) { picked = picked.split(','); } }\npicked = (Array.isArray(picked) ? picked : [picked]).map(t => String(t).trim().toUpperCase());\n\nreturn $('Read the Calls').all()\n  .filter(i => picked.includes(String(i.json.ticker).toUpperCase()))\n  .map(i => ({ json: { ...i.json, savedBy: 'workflow, approved' } }));\n"
+      },
+      "id": "b583e9ce-2b4e-40f1-9ef8-40095db82b29",
+      "name": "Approved Calls",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2096,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "showText",
+        "responseText": "={{ $json.html }}"
+      },
+      "id": "198707e9-b7b0-4bde-aab3-8d4344352e94",
+      "name": "Show the Brief",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.5,
+      "position": [
+        2320,
+        240
+      ],
+      "webhookId": "fe54bff6-521a-47da-bec7-e65cf5cd1ac0"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "4bfb6dfc-d581-4395-95ef-1c4bea44638d",
+      "name": "Chat with the Analyst",
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.5,
+      "position": [
+        0,
+        720
+      ],
+      "webhookId": "bf605f5d-5678-453f-b4b6-59489ed54523"
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "=You are an investment analyst. I'll ask you questions in chat; answer them in plain English.\n\nMy watchlist: NVDA, AVGO, AMAT, SNPS, MU, TXN\nMy thesis: Semiconductor companies benefiting from long-term demand for computing and AI, with differentiated technology, durable customer demand and strong cash flow, at a price that leaves room for a 12% annual return. Wary of high debt, dependence on a few customers, and growth that relies on a short-lived boom.\nHurdle: 0.12 annual return over 5 years.\nToday is {{ $now.toFormat(\"MMMM d, yyyy\") }}.\n\nYour tools:\n- News Search (Google News, last 7 days): call it with the company name and ticker, e.g. \"Eli Lilly LLY\".\n- Return Model: runs the 5-year return model for one company. Give it the ticker, growth, exitMultiple and the hurdle. It pulls the latest 10-K and today's price and returns the price, annual return, call, growth needed to clear the hurdle, current operating margin, debt / operating income, a 3x3 grid of returns and any data notes.\n- Past Calls: our saved calls for one ticker, newest first.\n- Handbook: our house handbook.\n\nYour assumptions:\n- growth: average annual revenue growth for the next 5 years, as a decimal (0.12 = 12%).\n- exitMultiple: the enterprise value / operating income the market will pay in year 5.\nBe realistic: keep growth between -10% and 30% and the multiple between 5x and 40x.\n\nWhen I ask for a call on a company: search the news, choose growth and the exit multiple, then run Return Model.\n\nRules:\n- Never calculate anything yourself, not even a ratio. Every number comes from Return Model.\n- Choose growth and the exit multiple yourself from the news and the company's numbers, and give a one-sentence reason for both.\n- Quote price, growth, exit multiple, annual return and call exactly as Return Model returned them.\n- Use each ticker exactly as it appears on the watchlist (for example \"TXN\", never \"TEXAS INSTRUMENTS INC\") when you call your tools.\n- If Return Model returns \"No call\", say so and use its notes to explain why.\n- You never save anything. If I ask you to save a call, tell me to run the Run Analysis form, where I approve what gets saved.\n\n## Memory\n- Before you make a call, check Past Calls for that ticker and say what changed since the last call.\n\n## Our handbook\n- Before you set assumptions or make a call on a company, search Handbook for that company and for the rules that apply. Follow the house guidance and cite the section numbers.\n\nAnswer in plain English, not JSON. Be concise: lead with the answer, then the numbers and the reasons behind them.",
+          "maxIterations": 20
+        }
+      },
+      "id": "3258b147-bf59-433d-a9f4-c4be9c3c8096",
+      "name": "Chat Analyst",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        448,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "contextWindowLength": 10
+      },
+      "id": "c37dfa51-85e9-49b0-b857-3b30dc3565ce",
+      "name": "Simple Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.4,
+      "position": [
+        592,
+        960
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                1,
+                2,
+                3,
+                4,
+                5
+              ],
+              "triggerAtHour": 7
+            }
+          ]
+        }
+      },
+      "id": "b7a26e7a-d74f-4489-b21c-8d415ec88ce8",
+      "name": "Daily Run",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        -240
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "is-scheduled",
+              "leftValue": "={{ $('Daily Run').isExecuted }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "cbd8cc16-1d37-4b31-bec9-35bbd3137208",
+      "name": "Scheduled Run?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1424,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Turn the scheduled run's proposed calls into one brief for the approval email\nconst rows = $input.all().map(i => i.json)\n  .sort((a, b) => (b.annualReturn ?? -9) - (a.annualReturn ?? -9));\nconst { hurdleRate, thesis } = $('Your Settings').first().json;\n\nconst pct = x => (x === null || x === undefined ? '—' : (x * 100).toFixed(1) + '%');\nconst esc = s => String(s ?? '').replace(/[&<>\"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;' }[ch]));\nconst color = { Research: '#1a7f37', Watch: '#9a6700', Pass: '#cf222e' };\nconst count = c => rows.filter(r => r.call === c).length;\n\nconst td = 'style=\"padding:8px;border-bottom:1px solid #e5e5e5;vertical-align:top;text-align:left\"';\nconst th = h => `<th style=\"text-align:left;padding:8px;border-bottom:2px solid #222\">${h}</th>`;\nconst html = `<div style=\"font-family:Helvetica,Arial,sans-serif;max-width:1000px;text-align:left\">\n<h2 style=\"margin-bottom:4px\">Investment Analyst Brief · ${$now.toFormat('MMMM d, yyyy')}</h2>\n<p style=\"color:#555;margin-top:0\">Thesis: ${esc(thesis)}<br>Hurdle ${pct(hurdleRate)} a year over 5 years · ${count('Research')} Research · ${count('Watch')} Watch · ${count('Pass')} Pass</p>\n<table style=\"border-collapse:collapse;font-size:13px;width:100%\"><tr>\n${['Company', 'Price', 'Growth / yr', 'Exit multiple', 'Annual return', 'Call', 'Why'].map(th).join('')}</tr>\n${rows.map(r => `<tr><td ${td}><b>${esc(r.ticker)}</b><br><small>${esc(r.company)}</small></td>\n<td ${td}>${r.price ? '$' + Number(r.price).toFixed(2) : '—'}</td><td ${td}>${pct(r.growth)}</td>\n<td ${td}>${r.exitMultiple ? r.exitMultiple + 'x' : '—'}</td><td ${td}><b>${pct(r.annualReturn)}</b></td>\n<td ${td}><b style=\"color:${color[r.call] || '#555'}\">${esc(r.call)}</b></td><td ${td}>${esc(r.reason)}</td></tr>`).join('')}\n</table><p style=\"color:#555\">Approve to save all ${rows.length} calls to the Analyst Calls table. Decline, or no reply within 24 hours, saves nothing.</p></div>`;\n\n// The email turns line breaks into <br>, so keep the HTML on one line\nreturn [{ json: { html: html.replace(/\\n/g, '') } }];\n"
+      },
+      "id": "b4b02511-d529-4a71-b2ff-965e6f7a2abd",
+      "name": "Write the Email Brief",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1648,
+        -240
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "sendAndWait",
+        "sendTo": "you@example.com",
+        "subject": "=Investment Analyst Brief: {{ $now.toFormat('MMMM d, yyyy') }}",
+        "message": "={{ $json.html }}",
+        "approvalOptions": {
+          "values": {
+            "approvalType": "double"
+          }
+        },
+        "options": {
+          "limitWaitTime": {
+            "values": {
+              "resumeAmount": 24
+            }
+          }
+        }
+      },
+      "id": "33f2abf4-47c3-4d79-93d6-deb768cb89ba",
+      "name": "Email the Brief",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1872,
+        -240
+      ],
+      "webhookId": "4927c54f-a467-48b0-9524-67688563ac47",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "approved",
+              "leftValue": "={{ $json.data?.approved === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "2c9e47a1-ea34-4010-911b-84ab36212948",
+      "name": "Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2096,
+        -240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// You approved the email: save every call from this run\nreturn $('Read the Calls').all().map(i => ({ json: { ...i.json, savedBy: 'scheduled, approved' } }));\n"
+      },
+      "id": "e0f8a0e5-f8ea-4f9a-858f-3933113ab8e4",
+      "name": "All Scheduled Calls",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2320,
+        -240
+      ]
+    },
+    {
+      "parameters": {
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Analyst Calls"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "fca3942b-ea48-4aa0-a392-d12228096fa8",
+      "name": "Save Scheduled Calls",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        2544,
+        -240
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Investment Analyst": {
+      "main": [
+        [
+          {
+            "node": "Read the Calls",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Investment Analyst",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "Chat Analyst",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "News Search": {
+      "ai_tool": [
+        [
+          {
+            "node": "Investment Analyst",
+            "type": "ai_tool",
+            "index": 0
+          },
+          {
+            "node": "Chat Analyst",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Your Settings": {
+      "main": [
+        [
+          {
+            "node": "Investment Analyst",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Return Model": {
+      "ai_tool": [
+        [
+          {
+            "node": "Investment Analyst",
+            "type": "ai_tool",
+            "index": 0
+          },
+          {
+            "node": "Chat Analyst",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Past Calls": {
+      "ai_tool": [
+        [
+          {
+            "node": "Investment Analyst",
+            "type": "ai_tool",
+            "index": 0
+          },
+          {
+            "node": "Chat Analyst",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handbook Embeddings": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Store Handbook",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handbook Loader": {
+      "ai_document": [
+        [
+          {
+            "node": "Store Handbook",
+            "type": "ai_document",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handbook Splitter": {
+      "ai_textSplitter": [
+        [
+          {
+            "node": "Handbook Loader",
+            "type": "ai_textSplitter",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handbook": {
+      "ai_tool": [
+        [
+          {
+            "node": "Investment Analyst",
+            "type": "ai_tool",
+            "index": 0
+          },
+          {
+            "node": "Chat Analyst",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handbook Search Embeddings": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Handbook",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Handbook": {
+      "main": [
+        [
+          {
+            "node": "Tag as PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tag as PDF": {
+      "main": [
+        [
+          {
+            "node": "Store Handbook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Analysis": {
+      "main": [
+        [
+          {
+            "node": "Your Settings",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Download Handbook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Review Page": {
+      "main": [
+        [
+          {
+            "node": "Review the Calls",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Review the Calls": {
+      "main": [
+        [
+          {
+            "node": "Approved Calls",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Write the Brief",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approved Calls": {
+      "main": [
+        [
+          {
+            "node": "Save Calls",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write the Brief": {
+      "main": [
+        [
+          {
+            "node": "Show the Brief",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chat with the Analyst": {
+      "main": [
+        [
+          {
+            "node": "Chat Analyst",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Simple Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "Chat Analyst",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily Run": {
+      "main": [
+        [
+          {
+            "node": "Your Settings",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Download Handbook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read the Calls": {
+      "main": [
+        [
+          {
+            "node": "Scheduled Run?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scheduled Run?": {
+      "main": [
+        [
+          {
+            "node": "Write the Email Brief",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Review Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write the Email Brief": {
+      "main": [
+        [
+          {
+            "node": "Email the Brief",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email the Brief": {
+      "main": [
+        [
+          {
+            "node": "Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approved?": {
+      "main": [
+        [
+          {
+            "node": "All Scheduled Calls",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "All Scheduled Calls": {
+      "main": [
+        [
+          {
+            "node": "Save Scheduled Calls",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": true,
+    "timezone": "America/New_York"
+  },
+  "versionId": "8b34136b-2c86-437b-bbb6-0551ac314cc3",
+  "meta": {
+    "aiBuilderAssisted": true,
+    "builderVariant": "mcp",
+    "instanceId": "38726144a8751a442b359536d4ed87c7b168adc8948bdcfc273c4e649c0231d3"
+  },
+  "nodeGroups": [
+    {
+      "id": "34faadd1-214c-4e34-af29-b11b705f1b13",
+      "name": "Save and Brief",
+      "nodeIds": [
+        "030325f9-549a-43ed-a6d2-5016bf1bc43f",
+        "d976f303-c25a-46d9-b9d2-c4c0a11a6016",
+        "b583e9ce-2b4e-40f1-9ef8-40095db82b29",
+        "73833db0-580a-46cb-9caa-05a82885db29",
+        "922ea047-c1f2-4aca-abee-1414637dd66c",
+        "198707e9-b7b0-4bde-aab3-8d4344352e94"
+      ],
+      "description": "You review the proposed calls; only the ticked ones are saved to Analyst Calls, then the form ends on the brief"
+    },
+    {
+      "id": "79478953-c3eb-4c3a-be8b-192dc43cca83",
+      "name": "Knowledge Base",
+      "nodeIds": [
+        "64925f41-b2b2-4b8d-9d84-5df0eda1be84",
+        "e9f81d44-2c9a-4208-ac44-4dfe4218a207",
+        "9ab56098-8967-4cb0-8130-fe46e7f08783",
+        "c56b0d3c-c1eb-4b72-a5c8-8789993dbcec",
+        "b7775951-a36b-4b62-85f8-bd0e02790935",
+        "5a09b7b6-25f4-4bf8-9116-ab03d60d1509"
+      ],
+      "description": "Downloads the handbook PDF, splits it into ~1,200-character chunks, embeds them and replaces the investment_handbook vector store"
+    },
+    {
+      "id": "dcece251-6c13-4f2e-9946-85fb52a70dd0",
+      "name": "Daily Email",
+      "nodeIds": [
+        "b4b02511-d529-4a71-b2ff-965e6f7a2abd",
+        "33f2abf4-47c3-4d79-93d6-deb768cb89ba",
+        "2c9e47a1-ea34-4010-911b-84ab36212948",
+        "e0f8a0e5-f8ea-4f9a-858f-3933113ab8e4",
+        "fca3942b-ea48-4aa0-a392-d12228096fa8"
+      ],
+      "description": "Scheduled runs email the brief; Approve saves all calls, Decline or 24h with no reply saves nothing"
+    }
+  ],
+  "id": "oK2PibhAwaKSU24w",
+  "tags": []
+}

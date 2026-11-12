@@ -1,0 +1,332 @@
+{
+  "name": "Tool · Return Model",
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "ticker"
+            },
+            {
+              "name": "growth",
+              "type": "number"
+            },
+            {
+              "name": "exitMultiple",
+              "type": "number"
+            },
+            {
+              "name": "hurdle",
+              "type": "number"
+            }
+          ]
+        }
+      },
+      "id": "5e613d6c-97cc-4e01-bf0b-dd49fa26e047",
+      "name": "When Called by Agent",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://www.sec.gov/files/company_tickers.json",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "CBS AI Club Workshop you@example.com"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "714452e6-b463-46d3-913a-5e5fd35f75dc",
+      "name": "Get SEC Ticker List",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        224,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// One SEC request per field, plus one Yahoo price request, for the one ticker the agent asked about\nconst s = $('When Called by Agent').first().json;\nconst ciks = Object.fromEntries(Object.values($input.first().json)\n  .map(c => [c.ticker, String(c.cik_str).padStart(10, '0')]));\nconst FIELDS = ['us-gaap/Revenues', 'us-gaap/RevenueFromContractWithCustomerExcludingAssessedTax',\n  'us-gaap/OperatingIncomeLoss',\n  'us-gaap/IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest',\n  'us-gaap/CashAndCashEquivalentsAtCarryingValue', 'us-gaap/LongTermDebt', 'us-gaap/LongTermDebtNoncurrent',\n  'dei/EntityCommonStockSharesOutstanding'];\nconst UA = 'CBS AI Club Workshop you@example.com';\n\nconst ticker = String(s.ticker || '').trim().toUpperCase();\nreturn [\n  ...FIELDS.map(field => ({ json: { ticker, field, ua: UA,\n    url: `https://data.sec.gov/api/xbrl/companyconcept/CIK${ciks[ticker] || '0000000000'}/${field}.json` } })),\n  { json: { ticker, field: 'price', ua: 'Mozilla/5.0', url: `https://query2.finance.yahoo.com/v8/finance/chart/${ticker}` } }\n];\n"
+      },
+      "id": "a7f1de06-a43c-4044-8bac-74f44b3977af",
+      "name": "Plan Data Requests",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "={{ $json.ua }}"
+            }
+          ]
+        },
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 5
+            }
+          }
+        }
+      },
+      "id": "e7773f5c-f6ca-42e1-81a7-a0deb414bbbc",
+      "name": "Fetch SEC and Price Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        672,
+        0
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Rebuild the model's 7 company inputs from the SEC and Yahoo responses, flagging gaps\nconst s = $('When Called by Agent').first().json;\nconst requests = $('Plan Data Requests').all(), responses = $input.all();\n\nconst byTicker = {};\nrequests.forEach((q, i) => {\n  const { ticker, field } = q.json, r = responses[i].json;\n  const c = byTicker[ticker] ??= { ticker, name: ticker, price: null, tags: {} };\n  if (field === 'price') c.price = r?.chart?.result?.[0]?.meta?.regularMarketPrice ?? null;\n  else if (r?.units) { c.name = r.entityName; c.tags[r.tag] = r.units; }\n});\n\n// Most recent full-year 10-K value across one or more tags (first tag wins a tie)\nconst latest = (c, tags, unit = 'USD') => tags\n  .flatMap(t => (c.tags[t]?.[unit] || []).filter(v => v.form === '10-K' &&\n    (!v.start || new Date(v.end) - new Date(v.start) > 300 * 864e5)))\n  .sort((a, b) => b.end.localeCompare(a.end))[0];\nconst m = v => (v ? v.val / 1e6 : null);\n\nconst companies = Object.values(byTicker).map(c => {\n  const flags = [];\n  const rev = latest(c, ['Revenues', 'RevenueFromContractWithCustomerExcludingAssessedTax']);\n  let oi = latest(c, ['OperatingIncomeLoss']);\n  if (!oi) {\n    oi = latest(c, ['IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest']);\n    if (oi) flags.push('used pre-tax income (no operating income line)');\n  }\n  const cash = latest(c, ['CashAndCashEquivalentsAtCarryingValue']);\n  const debt = latest(c, ['LongTermDebt', 'LongTermDebtNoncurrent']);\n  // Shares: add up every share class reported on the latest cover page\n  const sh = latest(c, ['EntityCommonStockSharesOutstanding'], 'shares');\n  const sharesM = sh ? c.tags.EntityCommonStockSharesOutstanding.shares\n    .filter(v => v.accn === sh.accn && v.end === sh.end).reduce((a, v) => a + v.val, 0) / 1e6 : null;\n\n  [['revenue', rev], ['operating income', oi], ['cash', cash], ['shares', sharesM], ['price', c.price]]\n    .forEach(([n, v]) => { if (!v) flags.push(n + ' missing'); });\n  if (!debt) flags.push('no long-term debt reported, used 0');\n  if (oi && oi.val <= 0) flags.push('operating loss in latest 10-K, model return not meaningful');\n\n  return { ticker: c.ticker, name: c.name, fiscalYearEnd: rev?.end || null, price: c.price, sharesM,\n    revenueM: m(rev), opIncomeM: m(oi), cashM: m(cash), debtM: debt ? m(debt) : 0, flags };\n});\n\n// Add the agent's assumptions and hurdle to the company\nreturn companies.map(co => ({ json: { ...co, company: co.name, hurdle: s.hurdle,\n  growth: s.growth, exitMultiple: s.exitMultiple } }));\n"
+      },
+      "id": "e5d0bc4c-aedd-4e3c-9f83-d14ecb8b28ba",
+      "name": "Company Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        896,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "ticker",
+              "name": "ticker",
+              "value": "={{ $json.ticker }}",
+              "type": "string"
+            },
+            {
+              "id": "company",
+              "name": "company",
+              "value": "={{ $json.company }}",
+              "type": "string"
+            },
+            {
+              "id": "fiscalYearEnd",
+              "name": "fiscalYearEnd",
+              "value": "={{ $json.fiscalYearEnd }}",
+              "type": "string"
+            },
+            {
+              "id": "price",
+              "name": "price",
+              "value": "={{ $json.price }}",
+              "type": "number"
+            },
+            {
+              "id": "sharesM",
+              "name": "sharesM",
+              "value": "={{ $json.sharesM }}",
+              "type": "number"
+            },
+            {
+              "id": "revenueM",
+              "name": "revenueM",
+              "value": "={{ $json.revenueM }}",
+              "type": "number"
+            },
+            {
+              "id": "opIncomeM",
+              "name": "opIncomeM",
+              "value": "={{ $json.opIncomeM }}",
+              "type": "number"
+            },
+            {
+              "id": "cashM",
+              "name": "cashM",
+              "value": "={{ $json.cashM }}",
+              "type": "number"
+            },
+            {
+              "id": "debtM",
+              "name": "debtM",
+              "value": "={{ $json.debtM }}",
+              "type": "number"
+            },
+            {
+              "id": "hurdle",
+              "name": "hurdle",
+              "value": "={{ $json.hurdle }}",
+              "type": "number"
+            },
+            {
+              "id": "growth",
+              "name": "growth",
+              "value": "={{ $json.growth }}",
+              "type": "number"
+            },
+            {
+              "id": "exitMultiple",
+              "name": "exitMultiple",
+              "value": "={{ $json.exitMultiple }}",
+              "type": "number"
+            },
+            {
+              "id": "flags",
+              "name": "flags",
+              "value": "={{ ($json.flags || []).join(' | ') }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {
+          "ignoreConversionErrors": true
+        }
+      },
+      "id": "26a5ad92-bbe2-4a33-9ab8-1f3b9176c423",
+      "name": "Hand Off to Python",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1120,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "pythonNative",
+        "pythonCode": "# 5-Year Return Model, rewritten from \"5-Year Return Model.xlsx\" (sheet \"Template\").\n# Same code as return_model.py (MODEL section). No imports; sees only this item (_item).\n# All money in $ millions, shares in millions, price in $.\n\nYEARS = 5\n\n\ndef year5_return(revenue, cash, debt, shares, price, growth, margin, multiple):\n    \"\"\"Rows 28-33 of the sheet: one scenario -> annual return.\"\"\"\n    revenue5 = revenue * (1 + growth) ** YEARS          # B28 = B9*(1+B23)^5\n    op_income5 = revenue5 * margin                       # B29 = B28*B24\n    ev5 = op_income5 * multiple                          # B30 = B29*B25\n    equity5 = ev5 + cash - debt                          # B31 = B30+B11-B12\n    price5 = equity5 / shares if shares else 0           # B32 = IF(B8=0,0,B31/B8)\n    annual = (price5 / price) ** (1 / YEARS) - 1 if price5 > 0 else -1   # B33\n    return {\"revenue5\": revenue5, \"opIncome5\": op_income5, \"ev5\": ev5,\n            \"equity5\": equity5, \"price5\": price5, \"annualReturn\": annual}\n\n\ndef growth_needed(revenue, cash, debt, shares, price, hurdle, margin, multiple):\n    \"\"\"Row 37 reverse check, solved with algebra:\n    growth = ((price*(1+hurdle)^5*shares - cash + debt) / multiple / margin / revenue)^(1/5) - 1\"\"\"\n    if revenue <= 0 or margin <= 0 or multiple <= 0:\n        return None\n    revenue5_needed = (price * (1 + hurdle) ** YEARS * shares - cash + debt) / multiple / margin\n    if revenue5_needed <= 0:\n        return -1.0  # cash alone covers the hurdle: any growth clears it\n    return (revenue5_needed / revenue) ** (1 / YEARS) - 1\n\n\ndef make_call(annual, hurdle):\n    \"\"\"Research at/above hurdle, Watch within 3 points below, Pass otherwise.\"\"\"\n    if annual is None:\n        return \"No call\"\n    if annual >= hurdle:\n        return \"Research\"\n    if annual >= hurdle - 0.03:\n        return \"Watch\"\n    return \"Pass\"\n\n\ndef return_grid(revenue, cash, debt, shares, price, growth, margin, multiple,\n                growth_step=0.05, multiple_step=5):\n    \"\"\"3x3 grid: growth -/0/+ 5 points (rows) x exit multiple -/0/+ 5x (columns).\"\"\"\n    growths = [growth - growth_step, growth, growth + growth_step]\n    multiples = [max(1, multiple - multiple_step), multiple, multiple + multiple_step]\n    rows = []\n    for g in growths:\n        rows.append([year5_return(revenue, cash, debt, shares, price, g, margin, m)[\"annualReturn\"]\n                     for m in multiples])\n    return {\"growths\": growths, \"multiples\": multiples, \"returns\": rows}\n\n\ndef pct(x):\n    return \"n/a\" if x is None else (\"%.1f%%\" % (x * 100))\n\n\ndef grid_text(grid):\n    \"\"\"One line per growth rate, e.g. 'g 10%: 15x 3.1% | 20x 8.2% | 25x 12.0%'.\"\"\"\n    lines = []\n    for g, rets in zip(grid[\"growths\"], grid[\"returns\"]):\n        cells = [\"%gx %s\" % (m, pct(r)) for m, r in zip(grid[\"multiples\"], rets)]\n        lines.append(\"g %s: %s\" % (pct(g), \" | \".join(cells)))\n    return \"\\n\".join(lines)\n\n\ndef num(x):\n    try:\n        return None if x is None or x == \"\" else float(x)\n    except (TypeError, ValueError):\n        return None\n\n\ndef r4(x):\n    return None if x is None else round(x, 4)\n\n\ndef run_company(c):\n    \"\"\"One company from 'Hand Off to Python' -> the model's results for that company.\"\"\"\n    revenue, op_income = num(c.get(\"revenueM\")), num(c.get(\"opIncomeM\"))\n    cash, debt = num(c.get(\"cashM\")) or 0.0, num(c.get(\"debtM\")) or 0.0\n    shares, price = num(c.get(\"sharesM\")), num(c.get(\"price\"))\n    hurdle = num(c.get(\"hurdle\"))\n    growth, multiple = num(c.get(\"growth\")), num(c.get(\"exitMultiple\"))\n    notes = [c[\"flags\"]] if c.get(\"flags\") else []\n\n    row = {\"ticker\": c.get(\"ticker\"), \"company\": c.get(\"company\"), \"fiscalYearEnd\": c.get(\"fiscalYearEnd\"),\n           \"price\": price, \"sharesM\": shares, \"revenueM\": revenue, \"opIncomeM\": op_income,\n           \"cashM\": cash, \"debtM\": debt, \"currentMargin\": None, \"hurdle\": hurdle,\n           \"growth\": growth, \"exitMultiple\": multiple, \"sharePriceYear5\": None, \"annualReturn\": None,\n           \"call\": \"No call\", \"growthNeeded\": None, \"debtToOpIncome\": None, \"grid\": None}\n\n    if revenue and revenue > 0 and op_income is not None:\n        row[\"currentMargin\"] = r4(op_income / revenue)\n    if op_income and op_income > 0:\n        row[\"debtToOpIncome\"] = r4(debt / op_income)\n\n    inputs_ok = all(v is not None and v > 0 for v in [revenue, shares, price]) and hurdle is not None\n    if not inputs_ok or op_income is None:\n        notes.append(\"model not run: missing company data\")\n    elif op_income <= 0:\n        notes.append(\"model not run: operating loss, current margin not meaningful\")\n    elif growth is None or multiple is None:\n        notes.append(\"model not run: no growth or exit multiple given\")\n    else:\n        margin = op_income / revenue  # current operating margin (sheet B15)\n        result = year5_return(revenue, cash, debt, shares, price, growth, margin, multiple)\n        row[\"sharePriceYear5\"] = round(result[\"price5\"], 2)\n        row[\"annualReturn\"] = r4(result[\"annualReturn\"])\n        row[\"call\"] = make_call(result[\"annualReturn\"], hurdle)\n        row[\"growthNeeded\"] = r4(growth_needed(revenue, cash, debt, shares, price, hurdle, margin, multiple))\n        row[\"grid\"] = grid_text(return_grid(revenue, cash, debt, shares, price, growth, margin, multiple))\n\n    row[\"notes\"] = \" | \".join(notes)\n    return row\n\n\nreturn {\"json\": run_company(_item[\"json\"])}\n"
+      },
+      "id": "a71e0896-543a-46f5-b1f6-bb5319038f0a",
+      "name": "Run the Model (Python)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1344,
+        0
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When Called by Agent": {
+      "main": [
+        [
+          {
+            "node": "Get SEC Ticker List",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get SEC Ticker List": {
+      "main": [
+        [
+          {
+            "node": "Plan Data Requests",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan Data Requests": {
+      "main": [
+        [
+          {
+            "node": "Fetch SEC and Price Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch SEC and Price Data": {
+      "main": [
+        [
+          {
+            "node": "Company Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Company Data": {
+      "main": [
+        [
+          {
+            "node": "Hand Off to Python",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hand Off to Python": {
+      "main": [
+        [
+          {
+            "node": "Run the Model (Python)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": true
+  },
+  "versionId": "f1243828-6658-43c6-923f-140649736b11",
+  "meta": {
+    "aiBuilderAssisted": true,
+    "builderVariant": "mcp",
+    "instanceId": "38726144a8751a442b359536d4ed87c7b168adc8948bdcfc273c4e649c0231d3"
+  },
+  "nodeGroups": [
+    {
+      "id": "19d8cfc8-fdd6-44a7-b840-d8781a759dc4",
+      "name": "Company Data",
+      "nodeIds": [
+        "714452e6-b463-46d3-913a-5e5fd35f75dc",
+        "a7f1de06-a43c-4044-8bac-74f44b3977af",
+        "e7773f5c-f6ca-42e1-81a7-a0deb414bbbc",
+        "e5d0bc4c-aedd-4e3c-9f83-d14ecb8b28ba"
+      ],
+      "description": "Looks up the ticker on SEC, pulls the latest 10-K numbers and the Yahoo price, flags gaps"
+    },
+    {
+      "id": "f845a07d-24f5-4cbf-9f43-3eccc152d2ea",
+      "name": "Python Model",
+      "nodeIds": [
+        "26a5ad92-bbe2-4a33-9ab8-1f3b9176c423",
+        "a71e0896-543a-46f5-b1f6-bb5319038f0a"
+      ],
+      "description": "Runs the 5-year return model on the agent's growth and exit multiple: return, call, growth needed, debt / op income, 3x3 grid"
+    }
+  ],
+  "id": "dU8QKU0EAHDv32Sl",
+  "tags": []
+}
