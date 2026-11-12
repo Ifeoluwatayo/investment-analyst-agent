@@ -86,10 +86,10 @@ The workshop provided a starter workflow, a pharma watchlist and a pharma covera
 
 | File | Contents |
 |---|---|
-| `investment-analyst-agent.json` | Main n8n workflow: triggers, analyst, handbook, approval, email, chat |
-| `tool-return-model.json` | The Return Model tool: SEC and price data plus the Python model |
-| `semiconductor-coverage-handbook.pdf` | The house handbook the agent searches |
-| `analyst-calls.csv` | Saved calls from the live run |
+| [`investment-analyst-agent.json`](investment-analyst-agent.json) | Main n8n workflow: triggers, analyst, handbook, approval, email, chat |
+| [`tool-return-model.json`](tool-return-model.json) | The Return Model tool: SEC and price data plus the Python model |
+| [`semiconductor-coverage-handbook.pdf`](semiconductor-coverage-handbook.pdf) | The house handbook the agent searches |
+| [`analyst-calls.csv`](analyst-calls.csv) | Saved calls from the live run |
 
 To run it yourself: import both JSON files into n8n, create a data table called "Analyst Calls", connect your own Anthropic and Gmail credentials, relink the Return Model tool, and set the recipient email.
 
