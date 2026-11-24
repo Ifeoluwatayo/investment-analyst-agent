@@ -4,7 +4,7 @@ An AI agent that covers six semiconductor companies against my investment thesis
 
 Built in n8n with Claude (Anthropic API), as part of the Columbia Business School AI Club's "Build Your Own Investment Analyst Agent" workshop led by Professor Sunny Israni, CFA. I used Claude Desktop as a building assistant throughout.
 
-![Workflow](workflow.png)
+![Workflow](screenshots/workflow.png)
 
 ## What it does
 
@@ -24,7 +24,7 @@ Built in n8n with Claude (Anthropic API), as part of the Columbia Business Schoo
 
 ## How it works
 
-**The agent supplies judgment. Code supplies math.** The analyst never calculates anything itself. It picks growth and an exit multiple, then calls a separate Python tool that returns the result. Same inputs, same answer, every time.
+**The agent supplies judgment. Code supplies math.** The analyst never calculates anything itself. It picks growth and an exit multiple, then calls a separate Python tool ([`scripts/return_model.py`](scripts/return_model.py)) that returns the result. Same inputs, same answer, every time. The analyst's full instructions are in [`prompts/`](prompts/).
 
 **The model** (rewritten from a five-year return spreadsheet and checked against it):
 1. Operating margin = operating income / revenue, held flat
@@ -62,15 +62,15 @@ The workshop provided a starter workflow, a pharma watchlist and a pharma covera
 
 **Daily brief by email**
 
-![Daily brief](brief.png)
+![Daily brief](screenshots/brief.png)
 
 **Approval**
 
-![Email approval](email-approval.png)
+![Email approval](screenshots/email-approval.png)
 
 **Chatting with the analyst**
 
-![Chat](chat.png)
+![Chat](screenshots/chat.png)
 
 ## Known limitations
 
@@ -82,14 +82,26 @@ The workshop provided a starter workflow, a pharma watchlist and a pharma covera
 - The analyst is sometimes more cautious than its own rules, for example cutting a multiple the handbook did not require
 - Not yet scored against a formal test set (the workshop's optional evaluation step)
 
-## Files
+## Repository structure
 
-| File | Contents |
+| Folder | Contents |
 |---|---|
-   | [`Investment Analyst Agent · Starter.json`](<Investment Analyst Agent · Starter.json>) | Main n8n workflow: triggers, analyst, handbook, approval, email, chat |
-   | [`Tool · Return Model.json`](<Tool · Return Model.json>) | The Return Model tool: SEC and price data plus the Python model |
-   | [`semiconductor-coverage-handbook.pdf`](semiconductor-coverage-handbook.pdf) | The house handbook the agent searches |
-   | [`analyst-calls.csv`](analyst-calls.csv) | Saved calls from the live run |
+| [`workflows/`](workflows/) | The two n8n workflows: the main agent and the Return Model tool |
+| [`scripts/`](scripts/) | The logic from inside the workflows, as readable code files |
+| [`prompts/`](prompts/) | The instructions given to the investment analyst and the chat analyst |
+| [`screenshots/`](screenshots/) | The images in this README |
+| [`data/`](data/) | Saved calls from the live run |
+| [`semiconductor-coverage-handbook.pdf`](semiconductor-coverage-handbook.pdf) | The house handbook the agent searches |
+
+**Scripts**
+
+| File | What it does |
+|---|---|
+| [`return_model.py`](scripts/return_model.py) | The five-year return model, call rule, reverse check and sensitivity grid. Runs on its own: `python scripts/return_model.py` |
+| [`company_data.js`](scripts/company_data.js) | Pulls each company's 10-K figures from SEC EDGAR and its price from Yahoo Finance, and flags missing data |
+| [`read_the_calls.js`](scripts/read_the_calls.js) | Turns the analyst's answer into one row per ticker, with safeguards for skipped or mislabeled calls |
+| [`write_the_brief.js`](scripts/write_the_brief.js) | Builds the daily email brief |
+| [`approval_and_handbook_helpers.js`](scripts/approval_and_handbook_helpers.js) | Keeps only approved calls, and prepares the handbook file for reading |
 
 To run it yourself: import both JSON files into n8n, create a data table called "Analyst Calls", connect your own Anthropic and Gmail credentials, relink the Return Model tool, and set the recipient email.
 
